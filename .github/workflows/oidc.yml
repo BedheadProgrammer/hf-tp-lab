@@ -1,0 +1,31 @@
+﻿name: oidc
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - name: mint id_token, print claims, exchange
+        run: |
+          set -e
+          RESP=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://huggingface.co")
+          TOKEN=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])")
+          echo "TOKEN_PREFIX=$(echo $TOKEN | cut -c1-20)"
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
+          python3 -c "import base64,json,sys; s=sys.argv[1]; s+='='*(-len(s)%4); print(json.dumps(json.loads(base64.urlsafe_b64decode(s)),indent=2))" "$PAYLOAD"
+          echo "$TOKEN" > "$RUNNER_TEMP/idt.txt"
+          BODY=$(python3 -c "import json,sys;print(json.dumps({'grant_type':'urn:ietf:params:oauth:grant-type:token-exchange','subject_token_type':'urn:ietf:params:oauth:token-type:id_token','subject_token':sys.argv[1],'resource':'h1testrightmeow/i47-typemix-20261108'}))" "$TOKEN")
+          echo EXCHANGE_RESPONSE:
+          curl -s -X POST https://huggingface.co/oauth/token -H 'Content-Type: application/json' -d "$BODY" | tee "$RUNNER_TEMP/ex.json"
+          echo
+          AT=$(python3 -c "import json;d=json.load(open('$RUNNER_TEMP/ex.json'));print(d.get('access_token',''))")
+          if [ -n "$AT" ]; then
+            echo "GOT_HF_TOKEN prefix=${AT:0:10}"
+            echo "REPO_VIEW:"; curl -s -H "Authorization: Bearer $AT" "https://huggingface.co/api/models/h1testrightmeow/i47-typemix-20261108" | head -c 400; echo
+            echo "COMMIT:"; curl -s -X POST "https://huggingface.co/api/models/h1testrightmeow/i47-typemix-20261108/commit/main" -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' -d '{"summary":"oidc lab marker","files":[{"path":"oidc_marker.txt","content":"oidc-ok"}]}' | head -c 400; echo
+          fi
